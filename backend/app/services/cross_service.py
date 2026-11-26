@@ -40,18 +40,95 @@ def mask_rules_for_classify(classify_tag_id: int) -> list[dict[str, Any]]:
     return results
 
 
-def noise_engine_for_budget(privacy_budget_id: int) -> list[dict[str, Any]]:
-    """给定一个隐私预算，返回匹配的已生效噪声配置。"""
+def noise_engine_for_budget(
+    privacy_budget_id: int,
+    *,
+    field: str | None = None,
+    cost: float | str | None = None,
+    executable_only: bool = False,
+) -> list[dict[str, Any]]:
+    """给定一个隐私预算/用途申请，返回与其字段关联的已生效噪声配置。
+
+    旧实现会把所有「已生效」配置（含无关字段配置）都带出来。这里默认按申请
+    字段做关联匹配（修复“无关字段进入关联结果”）；当显式传入 cost 或
+    ``executable_only=True`` 时，再按额度/剩余预算过滤费用，得到可执行候选。
+    """
     row = store.find("privacy_budget", privacy_budget_id)
     if not row:
         return []
-    eps = row.get("总预算Epsilon", "")
-    noises = store.rows("noise_engine")
+
+    # 解析申请字段：显式参数 > 预算行自带 > 关联的差分用途申请。
+    wanted_field = field or row.get("申请字段")
+    app = None
+    if not wanted_field:
+        try:
+            from app.services.dp_flow import resolve_application
+
+            app = resolve_application(row.get("申请编号"))
+            if app is not None:
+                wanted_field = app.get("申请字段")
+        except Exception:
+            app = None
+
+    # 费用上限：显式 cost 优先；否则用预算剩余（总额-已消耗）。
+    ceiling: float | None
+    if cost not in (None, ""):
+        try:
+            ceiling = float(cost)
+        except (TypeError, ValueError):
+            ceiling = None
+    else:
+        try:
+            total = float(str(row.get("总预算Epsilon", "0")))
+            consumed = float(str(row.get("已消耗Epsilon", "0") or 0))
+            ceiling = round(total - consumed, 6)
+        except (TypeError, ValueError):
+            ceiling = None
+
+    def _cost(n: dict[str, Any]) -> float:
+        try:
+            return float(str(n.get("Epsilon值", "0")))
+        except (TypeError, ValueError):
+            return 0.0
+
     results: list[dict[str, Any]] = []
-    for n in noises:
-        if n.get("status") == "已生效":
-            results.append(n)
+    for n in store.rows("noise_engine"):
+        if n.get("status") != "已生效":
+            continue
+        if wanted_field:
+            from app.services.dp_flow import field_matches
+
+            if not field_matches(n.get("关联字段"), wanted_field):
+                continue
+        if executable_only and ceiling is not None and _cost(n) > ceiling + 1e-9:
+            continue
+        results.append(n)
     return results
+
+
+def noise_candidates_for_budget(privacy_budget_id: int) -> dict[str, Any]:
+    """返回区分「字段关联」与「可执行候选」的完整候选结构（含排除原因）。"""
+    row = store.find("privacy_budget", privacy_budget_id)
+    if not row:
+        return {"field_matched": [], "executable": [], "all_active": []}
+    field_name = row.get("申请字段")
+    try:
+        from app.services.dp_flow import resolve_application, validate_usage_and_cost
+
+        app = resolve_application(row.get("申请编号") or privacy_budget_id)
+        if app is not None:
+            state = validate_usage_and_cost({"application": app.get("申请编号")})
+            return {
+                "application": state.get("application"),
+                "field_matched": [c for c in state.get("candidates", []) if c.get("field_match")],
+                "executable": state.get("executable_candidates", []),
+                "candidates": state.get("candidates", []),
+            }
+    except Exception:
+        pass
+    executable = noise_engine_for_budget(privacy_budget_id)
+    field_matched = noise_engine_for_budget(privacy_budget_id, executable_only=False)
+    return {"field_matched": field_matched, "executable": executable, "candidates": field_matched}
 
 
 def budget_for_differential_query(privacy_budget_id: int) -> dict[str, Any] | None:

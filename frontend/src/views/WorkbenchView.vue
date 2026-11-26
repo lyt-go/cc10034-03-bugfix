@@ -37,7 +37,10 @@
       <button class="btn ghost" data-testid="reset" type="button" @click="resetFilters">重置条件</button>
     </form>
 
-    <table class="data-table">
+    <PrivacyConfigPanel v-if="meta.key === 'privacy_budget'" @changed="reload" />
+    <DifferentialSubmitPanel v-else-if="meta.key === 'differential_sql'" @changed="reload" />
+
+    <table class="data-table" data-testid="resource-table">
       <thead>
         <tr>
           <th v-for="column in meta.fields" :key="column">{{ column }}</th>
@@ -104,6 +107,8 @@ import {
   runAction as applyAction,
 } from '@/api/backend-service'
 import type { EntryRow } from '@/data/types'
+import DifferentialSubmitPanel from '@/views/DifferentialSubmitPanel.vue'
+import PrivacyConfigPanel from '@/views/PrivacyConfigPanel.vue'
 
 const props = defineProps<{ moduleKey: string }>()
 const meta = moduleMeta(props.moduleKey)

@@ -3,11 +3,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter
+from fastapi import APIRouter, Query
 
 from app.services.cross_service import (
     mask_rules_for_classify,
     noise_engine_for_budget,
+    noise_candidates_for_budget,
     budget_for_differential_query,
     gradient_config_for_secure_agg,
     anomaly_rules_for_audit,
@@ -35,9 +36,29 @@ def link_mask_rules_classify(classify_tag_id: int) -> dict[str, Any]:
 
 
 @router.get("/link/privacy_budget+noise_engine/{privacy_budget_id}")
-def link_budget_noise(privacy_budget_id: int) -> dict[str, Any]:
-    noises = noise_engine_for_budget(privacy_budget_id)
-    return {"privacy_budget_id": privacy_budget_id, "noise_configs": noises, "count": len(noises)}
+def link_budget_noise(
+    privacy_budget_id: int,
+    field: str | None = Query(default=None),
+    cost: float | None = Query(default=None),
+    all_field_matches: bool = Query(default=False),
+) -> dict[str, Any]:
+    # noise_configs 保持“关联接口”语义：已生效且字段关联（超费用项仍可被选择提示）。
+    # executable_candidates 才是字段相符且费用可承担、可进入执行的候选。
+    field_matched = noise_engine_for_budget(privacy_budget_id, field=field, cost=cost)
+    executable = noise_engine_for_budget(
+        privacy_budget_id, field=field, cost=cost, executable_only=True
+    )
+    payload: dict[str, Any] = {
+        "privacy_budget_id": privacy_budget_id,
+        "noise_configs": field_matched,
+        "count": len(field_matched),
+        "executable_candidates": executable,
+    }
+    if all_field_matches:
+        rich = noise_candidates_for_budget(privacy_budget_id)
+        payload["field_matched_configs"] = rich.get("field_matched", [])
+        payload["candidate_details"] = rich.get("candidates", [])
+    return payload
 
 
 @router.get("/link/differential_sql+budget/{privacy_budget_id}")
